@@ -5,3 +5,7 @@ Gemfile.lock
 .bundle/
 .DS_Store
 rdoc/
+
+ext/score_index/*.so
+ext/score_index/*.o
+ext/score_index/Makefile
