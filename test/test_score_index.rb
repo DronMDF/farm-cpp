@@ -7,6 +7,6 @@ class TestScore < Minitest::Test
       '2017-07-19T21:24:51Z localhost 443 NOPREFIX@ffffffffffffffff',
       6
     )
-    assert_equal(index.value, '4034')
+    assert_equal(index.value, '2dd974')
   end
 end

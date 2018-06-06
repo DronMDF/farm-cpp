@@ -30,4 +30,5 @@ Gem::Specification.new do |s|
   s.email       = 'dron.valyaev@gmail.com'
   s.files       = ["run.rb"]
   s.metadata    = { "source_code_uri" => "https://github.com/zold-io/farm-cpp" }
+  s.add_development_dependency 'rake-compiler', '1.0.4'
 end
