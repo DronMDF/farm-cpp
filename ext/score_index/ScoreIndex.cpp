@@ -1,5 +1,9 @@
+#include <array>
+#include <condition_variable>
 #include <future>
 #include <iostream>
+#include <mutex>
+#include <random>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -8,54 +12,89 @@
 
 using namespace std;
 
-bool check_hash(const string &string, int strength)
+array<uint8_t, SHA256_DIGEST_LENGTH> sha256(const string &string)
 {
 	SHA256_CTX ctx;
 	SHA256_Init(&ctx);
 	SHA256_Update(&ctx, string.data(), string.size());
-	unsigned char hash[SHA256_DIGEST_LENGTH];
-	SHA256_Final(hash, &ctx);
+	array<uint8_t, SHA256_DIGEST_LENGTH> hash;
+	SHA256_Final(&hash[0], &ctx);
+	return hash;
+}
+
+bool check_hash(const array<uint8_t, SHA256_DIGEST_LENGTH> &hash, int strength)
+{
 	int current_strength = 0;
-	for (int i = SHA256_DIGEST_LENGTH; i > 0; i--) {
-		if (hash[i - 1] != 0) {
-			if ((hash[i - 1] & 0x0f) == 0) {
-				current_strength += 1;
-			}
+	const auto rend = hash.rend();
+	for (auto h = hash.rbegin(); h != rend; ++h) {
+		if ((*h & 0x0f) != 0) {
 			break;
 		}
-		current_strength += 2;
+		current_strength += (*h == 0) ? 2 : 1;
+		if (*h != 0) {
+			break;
+		}
 	}
 	return current_strength >= strength;
 }
 
-int index_core(const string &prefix, int strength, int base)
+string create_nonce(int i)
 {
-	for (int i = base; i < base + 1000; i++) {
-		ostringstream out;
-		out << prefix << " " << hex << i;
-		if (check_hash(out.str(), strength)) {
-			return i;
+	const string chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+	string rv;
+	while (i >= 0) {
+		rv += chars[i % chars.size()];
+		if (i < chars.size()) {
+			break;
 		}
+		i /= chars.size();
 	}
-	return -1;
+	return {rv.rbegin(), rv.rend()};
 }
 
-int index(const string &prefix, int strength)
+atomic<bool> found;
+mutex mtx;
+condition_variable cv;
+string nonce;
+
+void index_core(const string &prefix, int strength, int base)
 {
-	int cpus = std::thread::hardware_concurrency();
-	for (int base = 0;;) {
-		vector<future<int>> af;
-		for (int c = 0; c < cpus; c++) {
-			af.push_back(async(index_core, prefix, strength, base));
-			base += 1000;
+	for (int i = base; ; i++) {
+		if (found) {
+			break;
 		}
-		for (auto &f : af) {
-			const auto r = f.get();
-			if (r != -1) {
-				return r;
-			}
+		const auto hash = sha256(prefix + " " + create_nonce(i));
+		if (check_hash(hash, strength)) {
+			unique_lock<mutex> lock(mtx);
+			nonce = create_nonce(i);
+			found = true;
+			cv.notify_one();
 		}
 	}
+}
+
+string index(const string &prefix, int strength)
+{
+	mt19937 random{hash<string>{}(prefix)};
+	found = false;
+
+	int cpus = std::thread::hardware_concurrency();
+	vector<thread> threads;
+	for (int i = 0; i < cpus; i++) {
+		threads.emplace_back(index_core, prefix, strength, random());
+	}
+
+	unique_lock<mutex> lock(mtx);
+	while (!found) {
+		cv.wait(lock);
+	}
+	lock.unlock();
+
+	for (auto &t : threads) {
+		t.join();
+	}
+
+	return nonce;
 }
 
 static
@@ -72,11 +111,8 @@ VALUE ScoreIndex_value(VALUE self)
 	auto prefix_value = rb_iv_get(self, "@prefix");
 	const string prefix = StringValuePtr(prefix_value);
 	const int strength = NUM2INT(rb_iv_get(self, "@strength"));
-
-	ostringstream out;
-	out << hex << index(prefix, strength);
-
-	return rb_str_new2(out.str().c_str());
+	const auto nonce = index(prefix, strength);
+	return rb_str_new2(nonce.c_str());
 }
 
 extern "C"
